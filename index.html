@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Game Library Downloader</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #121212;
+      color: #e0e0e0;
+      font-family: Arial, sans-serif;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 800px;
+      padding: 30px;
+      text-align: center;
+      background: #1e1e1e;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    }
+
+    h1 {
+      margin-top: 0;
+      color: white;
+    }
+
+    p {
+      color: #aaa;
+      line-height: 1.6;
+    }
+
+    .status {
+      height: 220px;
+      margin: 20px 0;
+      padding: 15px;
+      overflow-y: auto;
+      text-align: left;
+      color: #00ff66;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .progress-container {
+      display: none;
+      width: 100%;
+      height: 14px;
+      margin: 15px 0;
+      overflow: hidden;
+      background: #334155;
+      border-radius: 20px;
+    }
+
+    .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: #10b981;
+      transition: width 0.15s ease;
+    }
+
+    button {
+      padding: 14px 28px;
+      color: white;
+      background: #2563eb;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button:disabled {
+      color: #9ca3af;
+      background: #4b5563;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="container">
+    <h1>Game Library Downloader</h1>
+
+    <p>
+      Downloads available HTML game files and packages them into a ZIP archive.
+    </p>
+
+    <div id="status" class="status">System ready. Click the button to begin.</div>
+
+    <div id="progressContainer" class="progress-container">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+
+    <button id="downloadButton">
+      📥 Fetch and Download All
+    </button>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <script>
+    "use strict";
+
+    const CATALOG_URLS = [
+      "https://raw.githubusercontent.com/gn-math/assets/main/zones.json",
+      "https://cdn.jsdelivr.net/gh/gn-math/assets@main/zones.json"
+    ];
+
+    const HTML_BASE_URLS = [
+      "https://raw.githubusercontent.com/gn-math/html/main",
+      "https://cdn.jsdelivr.net/gh/gn-math/html@main"
+    ];
+
+    const statusBox = document.getElementById("status");
+    const downloadButton = document.getElementById("downloadButton");
+    const progressContainer = document.getElementById("progressContainer");
+    const progressBar = document.getElementById("progressBar");
+
+    function log(message) {
+      statusBox.textContent += "\n> " + message;
+      statusBox.scrollTop = statusBox.scrollHeight;
+    }
+
+    function cleanFileName(name) {
+      return String(name || "Unnamed Game")
+        .replace(/[\/\\?%*:|"<>]/g, "-")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 150);
+    }
+
+    function createUniqueFileName(name, usedNames) {
+      const baseName = cleanFileName(name);
+      let fileName = baseName + ".html";
+      let number = 2;
+
+      while (usedNames.has(fileName.toLowerCase())) {
+        fileName = `${baseName} (${number}).html`;
+        number++;
+      }
+
+      usedNames.add(fileName.toLowerCase());
+      return fileName;
+    }
+
+    async function getResponseFromUrls(urls) {
+      let lastError = null;
+
+      for (const url of urls) {
+        try {
+          const response = await fetch(url, {
+            cache: "no-store"
+          });
+
+          if (response.ok) {
+            return response;
+          }
+
+          lastError = new Error(
+            `${response.status} ${response.statusText}: ${url}`
+          );
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError || new Error("Unable to download the file.");
+    }
+
+    function getGameName(game, index) {
+      return (
+        game.name ||
+        game.title ||
+        game.gameName ||
+        `Game ${index + 1}`
+      );
+    }
+
+    function getGameUrl(game, htmlBaseUrl) {
+      let gameUrl = "";
+
+      if (typeof game.url === "string") {
+        gameUrl = game.url;
+      }
+
+      gameUrl = gameUrl
+        .replaceAll("{HTML_URL}", htmlBaseUrl)
+        .replaceAll("{htmlURL}", htmlBaseUrl)
+        .replaceAll("{HTML_BASE}", htmlBaseUrl);
+
+      if (gameUrl && !gameUrl.startsWith("http")) {
+        gameUrl =
+          htmlBaseUrl + "/" + gameUrl.replace(/^\/+/, "");
+      }
+
+      if (!gameUrl && game.id !== undefined) {
+        gameUrl =
+          htmlBaseUrl + "/" +
+          encodeURIComponent(String(game.id)) +
+          ".html";
+      }
+
+      return gameUrl;
+    }
+
+    async function downloadCatalog() {
+      log("Downloading the game catalog...");
+
+      const response = await getResponseFromUrls(CATALOG_URLS);
+      const catalog = await response.json();
+
+      if (!Array.isArray(catalog)) {
+        throw new Error("The catalog is not in the expected format.");
+      }
+
+      const games = catalog.filter(game => {
+        return game &&
+          typeof game === "object" &&
+          (game.url || game.id !== undefined);
+      });
+
+      if (games.length === 0) {
+        throw new Error("No games were found in the catalog.");
+      }
+
+      return games;
+    }
+
+    async function downloadAllGames() {
+      downloadButton.disabled = true;
+      progressContainer.style.display = "block";
+      progressBar.style.width = "0%";
+      statusBox.textContent = "Starting download...";
+
+      try {
+        if (typeof JSZip === "undefined") {
+          throw new Error("The ZIP library failed to load.");
+        }
+
+        const games = await downloadCatalog();
+
+        log(`Found ${games.length} games.`);
+
+        const zip = new JSZip();
+        const usedNames = new Set();
+
+        let successful = 0;
+        let failed = 0;
+
+        for (let index = 0; index < games.length; index++) {
+          const game = games[index];
+          const gameName = getGameName(game, index);
+          const percentage = Math.round(
+            ((index + 1) / games.length) * 100
+          );
+
+          progressBar.style.width = percentage + "%";
+
+          let downloaded = false;
+
+          for (const htmlBaseUrl of HTML_BASE_URLS) {
+            const gameUrl = getGameUrl(game, htmlBaseUrl);
+
+            if (!gameUrl) {
+              break;
+            }
+
+            try {
+              const response = await fetch(gameUrl, {
+                cache: "no-store"
+              });
+
+              if (!response.ok) {
+                continue;
+              }
+
+              const gameHtml = await response.text();
+              const fileName = createUniqueFileName(
+                gameName,
+                usedNames
+              );
+
+              zip.file(fileName, gameHtml);
+              successful++;
+              downloaded = true;
+
+              if (successful % 10 === 0) {
+                log(`Downloaded ${successful} games...`);
+              }
+
+              break;
+            } catch (error) {
+              console.warn(
+                "Could not download:",
+                gameName,
+                error
+              );
+            }
+          }
+
+          if (!downloaded) {
+            failed++;
+            console.warn(`Skipped: ${gameName}`);
+          }
+        }
+
+        if (successful === 0) {
+          throw new Error(
+            "No game files could be downloaded."
+          );
+        }
+
+        log("Creating the ZIP file...");
+
+        const zipBlob = await zip.generateAsync(
+          { type: "blob" },
+          metadata => {
+            progressBar.style.width =
+              Math.round(metadata.percent) + "%";
+          }
+        );
+
+        const downloadUrl = URL.createObjectURL(zipBlob);
+        const downloadLink = document.createElement("a");
+
+        downloadLink.href = downloadUrl;
+        downloadLink.download = "GN_Math_Game_Library.zip";
+
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+
+        setTimeout(() => {
+          URL.revokeObjectURL(downloadUrl);
+        }, 1000);
+
+        log(`Finished. Downloaded: ${successful}`);
+        log(`Failed or skipped: ${failed}`);
+        log("The ZIP file should be in your Downloads folder.");
+      } catch (error) {
+        console.error(error);
+        log("ERROR: " + error.message);
+      } finally {
+        downloadButton.disabled = false;
+      }
+    }
+
+    downloadButton.addEventListener(
+      "click",
+      downloadAllGames
+    );
+  </script>
+</body>
+</html>
